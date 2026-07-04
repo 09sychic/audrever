@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio Reverser — Client-Side WAV Reversal</title>
+
+<!-- Tailwind CSS via CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Lucide Icons via CDN -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.474.0/dist/umd/lucide.min.js"></script>
+
+<style>
+  /* ---- Custom, non-Tailwind polish ---- */
+  * { -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Animated gradient border for the dropzone when dragging */
+  @keyframes borderPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.35); }
+    50% { box-shadow: 0 0 0 8px rgba(99,102,241,0); }
+  }
+  .drag-active {
+    animation: borderPulse 1.4s ease-in-out infinite;
+    border-color: rgb(129 140 248) !important;
+    background-color: rgba(99, 102, 241, 0.08) !important;
+  }
+
+  /* Spinner for processing state */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 0.9s linear infinite; }
+
+  /* Pulsing red glow while actively recording from the microphone */
+  @keyframes recordPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+    50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+  }
+  .recording-active { animation: recordPulse 1.2s ease-in-out infinite; }
+
+  /* Waveform bar bounce animation for the "playing" indicator */
+  @keyframes waveBar {
+    0%, 100% { height: 25%; }
+    50% { height: 100%; }
+  }
+  .wave-bar {
+    animation: waveBar 0.9s ease-in-out infinite;
+    transform-origin: bottom;
+  }
+
+  /* Smooth fade-in utility */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeIn 0.35s ease-out both; }
+
+  /* Custom scrollbar for a polished dark UI */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 9999px; }
+
+  /* Range input styling (progress seek bar) */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: linear-gradient(to right, #6366f1 var(--progress, 0%), #3f3f46 var(--progress, 0%));
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 16px;
+    width: 16px;
+    margin-top: -5px;
+    border-radius: 9999px;
+    background: #eef2ff;
+    border: 3px solid #6366f1;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    transition: transform 0.15s ease;
+  }
+  input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+  input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: #3f3f46;
+  }
+  input[type="range"]::-moz-range-progress {
+    height: 6px;
+    border-radius: 9999px;
+    background: #6366f1;
+  }
+  input[type="range"]::-moz-range-thumb {
+    height: 16px;
+    width: 16px;
+    border-radius: 9999px;
+    background: #eef2ff;
+    border: 3px solid #6366f1;
+  }
+</style>
+</head>
+
+<body class="min-h-screen bg-zinc-950 text-zinc-100 antialiased selection:bg-indigo-500/30">
+
+  <!-- Subtle background ambience -->
+  <div class="fixed inset-0 -z-10 overflow-hidden">
+    <div class="absolute -top-40 -left-40 h-96 w-96 rounded-full bg-indigo-600/10 blur-3xl"></div>
+    <div class="absolute -bottom-40 -right-40 h-96 w-96 rounded-full bg-emerald-500/10 blur-3xl"></div>
+  </div>
+
+  <main class="mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center px-4 py-10 sm:px-6">
+
+    <!-- Header -->
+    <header class="mb-8 text-center fade-in">
+      <div class="mb-3 inline-flex items-center justify-center rounded-2xl bg-zinc-900 p-3 ring-1 ring-zinc-800">
+        <i data-lucide="audio-lines" class="h-7 w-7 text-indigo-400"></i>
+      </div>
+      <h1 class="text-2xl font-bold tracking-tight text-white sm:text-3xl">Audio Reverser</h1>
+      <p class="mt-2 text-sm text-zinc-400 sm:text-base">
+        Flip any track backwards, entirely in your browser. Nothing is uploaded anywhere.
+      </p>
+    </header>
+
+    <!-- Card container -->
+    <section class="w-full rounded-3xl border border-zinc-800/80 bg-zinc-900/60 p-4 shadow-2xl shadow-black/40 backdrop-blur fade-in sm:p-6">
+
+      <!-- ============ MODE TABS: Upload vs Record ============ -->
+      <div class="mb-4 flex rounded-xl bg-zinc-950/50 p-1 ring-1 ring-zinc-800">
+        <button id="tabUpload" class="mode-tab flex-1 rounded-lg py-2 text-sm font-medium transition-all duration-200">
+          <span class="inline-flex items-center justify-center gap-1.5">
+            <i data-lucide="upload" class="h-3.5 w-3.5"></i>Upload File
+          </span>
+        </button>
+        <button id="tabRecord" class="mode-tab flex-1 rounded-lg py-2 text-sm font-medium transition-all duration-200">
+          <span class="inline-flex items-center justify-center gap-1.5">
+            <i data-lucide="mic" class="h-3.5 w-3.5"></i>Record Audio
+          </span>
+        </button>
+      </div>
+
+      <!-- ============ DROPZONE (upload mode) ============ -->
+      <div id="uploadPanel">
+        <div id="dropzone"
+             class="group relative flex min-h-[220px] w-full cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-zinc-700 bg-zinc-950/40 px-6 py-10 text-center transition-all duration-300 hover:border-indigo-500/70 hover:bg-indigo-500/5">
+          <input id="fileInput" type="file" accept=".mp3,.wav,.ogg,.m4a,audio/*" class="hidden" />
+
+          <div id="dropzoneContent" class="flex flex-col items-center gap-3">
+            <div class="rounded-full bg-zinc-800/80 p-4 transition-transform duration-300 group-hover:scale-110 group-hover:bg-indigo-500/20">
+              <i data-lucide="upload-cloud" class="h-8 w-8 text-zinc-400 transition-colors group-hover:text-indigo-400"></i>
+            </div>
+            <p class="text-sm font-medium text-zinc-200 sm:text-base">
+              Drag &amp; drop an audio file here, or <span class="text-indigo-400 underline underline-offset-2">browse</span>
+            </p>
+            <p class="text-xs text-zinc-500">Supports MP3, WAV, OGG, M4A</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ LIVE RECORDER (record mode) ============ -->
+      <div id="recordPanel" class="hidden min-h-[220px] w-full flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-zinc-700 bg-zinc-950/40 px-6 py-10 text-center transition-all duration-300">
+        <div id="recordIconWrap" class="rounded-full bg-zinc-800/80 p-5 transition-all duration-300">
+          <i data-lucide="mic" class="h-8 w-8 text-zinc-400"></i>
+        </div>
+        <p id="recordStatusLabel" class="text-sm font-medium text-zinc-200 sm:text-base">Tap the button to start recording</p>
+        <p id="recordTimer" class="hidden font-mono text-2xl tabular-nums text-zinc-100">0:00</p>
+        <button id="recordToggleBtn"
+          class="flex items-center gap-2 rounded-full bg-red-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-red-500/30 transition-all duration-200 hover:bg-red-400 hover:scale-105 active:scale-95">
+          <i data-lucide="circle" class="h-4 w-4 fill-current"></i>
+          <span>Start Recording</span>
+        </button>
+        <p class="text-xs text-zinc-500">Your browser will ask for microphone permission</p>
+      </div>
+
+      <!-- ============ ERROR MESSAGE ============ -->
+      <div id="errorBox" class="mt-4 hidden items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300 fade-in">
+        <i data-lucide="alert-triangle" class="mt-0.5 h-4 w-4 flex-shrink-0"></i>
+        <span id="errorText">Something went wrong.</span>
+      </div>
+
+      <!-- ============ PLAYER PANEL (hidden until a file is loaded) ============ -->
+      <div id="playerPanel" class="mt-5 hidden fade-in">
+
+        <!-- File info row -->
+        <div class="flex items-center justify-between gap-3 rounded-2xl bg-zinc-950/50 p-3 ring-1 ring-zinc-800">
+          <div class="flex min-w-0 items-center gap-3">
+            <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-indigo-500/15">
+              <i data-lucide="file-audio" class="h-5 w-5 text-indigo-400"></i>
+            </div>
+            <div class="min-w-0">
+              <p id="fileName" class="truncate text-sm font-medium text-zinc-100">track.mp3</p>
+              <p id="fileMeta" class="text-xs text-zinc-500">--</p>
+            </div>
+          </div>
+          <button id="changeFileBtn" title="Choose a different file"
+            class="flex-shrink-0 rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200">
+            <i data-lucide="refresh-cw" class="h-4 w-4"></i>
+          </button>
+        </div>
+
+        <!-- Version toggle: Original / Reversed -->
+        <div class="mt-4 flex rounded-xl bg-zinc-950/50 p-1 ring-1 ring-zinc-800">
+          <button id="btnOriginal" data-version="original"
+            class="version-btn flex-1 rounded-lg py-2 text-sm font-medium transition-all duration-200">
+            Original
+          </button>
+          <button id="btnReversed" data-version="reversed" disabled
+            class="version-btn flex-1 rounded-lg py-2 text-sm font-medium text-zinc-600 transition-all duration-200 disabled:cursor-not-allowed">
+            Reversed
+          </button>
+        </div>
+
+        <!-- Seek bar -->
+        <div class="mt-5">
+          <input id="seekBar" type="range" min="0" max="100" value="0" step="0.1"
+                 class="w-full" />
+          <div class="mt-1 flex justify-between text-xs text-zinc-500 tabular-nums">
+            <span id="currentTime">0:00</span>
+            <span id="duration">0:00</span>
+          </div>
+        </div>
+
+        <!-- Transport controls -->
+        <div class="mt-4 flex items-center justify-center gap-4">
+          <!-- Play / Pause -->
+          <button id="playPauseBtn"
+            class="flex h-14 w-14 items-center justify-center rounded-full bg-indigo-500 text-white shadow-lg shadow-indigo-500/30 transition-all duration-200 hover:bg-indigo-400 hover:scale-105 active:scale-95">
+            <i data-lucide="play" class="h-6 w-6 translate-x-0.5"></i>
+          </button>
+        </div>
+
+        <!-- Mini waveform "now playing" indicator -->
+        <div id="playingIndicator" class="mt-4 hidden items-end justify-center gap-1 h-6">
+          <span class="wave-bar w-1 rounded-full bg-emerald-400" style="animation-delay:0s"></span>
+          <span class="wave-bar w-1 rounded-full bg-emerald-400" style="animation-delay:0.15s"></span>
+          <span class="wave-bar w-1 rounded-full bg-emerald-400" style="animation-delay:0.3s"></span>
+          <span class="wave-bar w-1 rounded-full bg-emerald-400" style="animation-delay:0.45s"></span>
+          <span class="wave-bar w-1 rounded-full bg-emerald-400" style="animation-delay:0.2s"></span>
+        </div>
+
+        <!-- Action buttons: Reverse + Download -->
+        <div class="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button id="reverseBtn"
+            class="flex items-center justify-center gap-2 rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold text-zinc-100 ring-1 ring-zinc-700 transition-all duration-200 hover:bg-zinc-700 hover:ring-indigo-500/50 disabled:cursor-not-allowed disabled:opacity-50">
+            <i data-lucide="repeat" class="h-4 w-4"></i>
+            <span id="reverseBtnText">Reverse Audio</span>
+          </button>
+
+          <button id="downloadBtn" disabled
+            class="flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-zinc-950 transition-all duration-200 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600 disabled:ring-1 disabled:ring-zinc-700">
+            <i data-lucide="download" class="h-4 w-4"></i>
+            <span>Download Reversed WAV</span>
+          </button>
+        </div>
+
+        <!-- Status line -->
+        <p id="statusText" class="mt-3 text-center text-xs text-zinc-500">Load a file, then hit "Reverse Audio".</p>
+      </div>
+
+    </section>
+
+    <footer class="mt-8 text-center text-xs text-zinc-600 fade-in">
+      100% client-side · Powered by the Web Audio API · No files ever leave your device
+    </footer>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+
+  /** Safely (re)render Lucide icons. No-ops instead of throwing if the
+   *  Lucide CDN script hasn't loaded yet or failed to load at all. */
+  function renderIcons() {
+    if (typeof lucide !== 'undefined' && lucide.createIcons) {
+      lucide.createIcons();
+    } else {
+      console.warn('Lucide icons library not available — icons will not render.');
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // DOM references
+  // ---------------------------------------------------------------------
+  const tabUpload       = document.getElementById('tabUpload');
+  const tabRecord       = document.getElementById('tabRecord');
+  const uploadPanel     = document.getElementById('uploadPanel');
+  const recordPanel     = document.getElementById('recordPanel');
+  const recordToggleBtn = document.getElementById('recordToggleBtn');
+  const recordTimerEl   = document.getElementById('recordTimer');
+  const recordStatusLabel = document.getElementById('recordStatusLabel');
+  const recordIconWrap  = document.getElementById('recordIconWrap');
+  const dropzone        = document.getElementById('dropzone');
+  const fileInput       = document.getElementById('fileInput');
+  const errorBox        = document.getElementById('errorBox');
+  const errorText       = document.getElementById('errorText');
+  const playerPanel     = document.getElementById('playerPanel');
+  const fileNameEl      = document.getElementById('fileName');
+  const fileMetaEl      = document.getElementById('fileMeta');
+  const changeFileBtn   = document.getElementById('changeFileBtn');
+  const btnOriginal     = document.getElementById('btnOriginal');
+  const btnReversed     = document.getElementById('btnReversed');
+  const seekBar         = document.getElementById('seekBar');
+  const currentTimeEl   = document.getElementById('currentTime');
+  const durationEl      = document.getElementById('duration');
+  const playPauseBtn    = document.getElementById('playPauseBtn');
+  const playingIndicator= document.getElementById('playingIndicator');
+  const reverseBtn      = document.getElementById('reverseBtn');
+  const reverseBtnText  = document.getElementById('reverseBtnText');
+  const downloadBtn     = document.getElementById('downloadBtn');
+  const statusText      = document.getElementById('statusText');
+
+  // ---------------------------------------------------------------------
+  // App state
+  // ---------------------------------------------------------------------
+  let audioCtx = null;              // Web Audio API context (created lazily on first user gesture)
+  let originalBuffer = null;        // Decoded AudioBuffer of the uploaded file
+  let reversedBuffer = null;        // AudioBuffer with each channel's samples reversed
+  let currentVersion = 'original';  // 'original' | 'reversed' — which buffer is active
+  let sourceNode = null;            // Currently playing AudioBufferSourceNode
+  let isPlaying = false;
+  let startedAt = 0;                // audioCtx.currentTime when playback started
+  let pausedAt = 0;                 // Offset (seconds) into the buffer where playback is paused
+  let rafId = null;                 // requestAnimationFrame handle for the seek bar updater
+  let currentFile = null;
+  let activeMode = 'upload';        // 'upload' | 'record' — which input panel is showing
+  let mediaStream = null;           // Live microphone MediaStream
+  let mediaRecorder = null;         // MediaRecorder instance capturing the mic stream
+  let recordedChunks = [];          // Blob chunks collected during recording
+  let isRecording = false;
+  let recordTimerInterval = null;
+  let recordSeconds = 0;
+
+  // ---------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------
+
+  /** Lazily create (or resume) the AudioContext. Must be called from within
+   *  a user-gesture handler the first time, to satisfy autoplay policies. */
+  function ensureAudioContext() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    return audioCtx;
+  }
+
+  function showError(message) {
+    errorText.textContent = message;
+    errorBox.classList.remove('hidden');
+    errorBox.classList.add('flex');
+    statusText.textContent = 'An error occurred — please try another file.';
+  }
+
+  function hideError() {
+    errorBox.classList.add('hidden');
+    errorBox.classList.remove('flex');
+  }
+
+  function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) seconds = 0;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  function getActiveBuffer() {
+    return currentVersion === 'reversed' ? reversedBuffer : originalBuffer;
+  }
+
+  function humanFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let u = -1;
+    do { bytes /= 1024; u++; } while (bytes >= 1024 && u < units.length - 1);
+    return `${bytes.toFixed(1)} ${units[u]}`;
+  }
+
+  // ---------------------------------------------------------------------
+  // File handling (drag & drop + file picker)
+  // ---------------------------------------------------------------------
+
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('drag-active');
+  });
+
+  ['dragleave', 'dragend'].forEach(evt => {
+    dropzone.addEventListener(evt, () => dropzone.classList.remove('drag-active'));
+  });
+
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-active');
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) handleFile(file);
+  });
+
+  changeFileBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetApp();
+    fileInput.click();
+  });
+
+  /** Reset state so a new file can be loaded cleanly. */
+  function resetApp() {
+    if (isRecording) stopRecording({ discard: true });
+    stopPlayback();
+    originalBuffer = null;
+    reversedBuffer = null;
+    currentVersion = 'original';
+    currentFile = null;
+    fileInput.value = '';
+    playerPanel.classList.add('hidden');
+    downloadBtn.disabled = true;
+    btnReversed.disabled = true;
+    updateVersionButtons();
+    hideError();
+  }
+
+  async function handleFile(file) {
+    hideError();
+
+    // Basic type validation (also allow files whose MIME type is empty but
+    // extension matches, since some OSes report audio/* inconsistently)
+    const validExt = /\.(mp3|wav|ogg|m4a)$/i.test(file.name);
+    const validMime = file.type.startsWith('audio/');
+    if (!validExt && !validMime) {
+      showError('Unsupported file type. Please upload an MP3, WAV, OGG, or M4A file.');
+      return;
+    }
+
+    currentFile = file;
+    fileNameEl.textContent = file.name;
+    fileMetaEl.textContent = `${humanFileSize(file.size)} · Decoding…`;
+    playerPanel.classList.remove('hidden');
+    downloadBtn.disabled = true;
+    btnReversed.disabled = true;
+    reversedBuffer = null;
+    currentVersion = 'original';
+    updateVersionButtons();
+    statusText.textContent = 'Decoding audio…';
+
+    try {
+      const ctx = ensureAudioContext();
+      const arrayBuffer = await file.arrayBuffer();
+
+      // decodeAudioData is the core Web Audio API call that turns compressed
+      // audio bytes (mp3/ogg/m4a/wav) into a raw AudioBuffer of PCM samples.
+      const decoded = await new Promise((resolve, reject) => {
+        // Callback form used for broadest browser support alongside the Promise form.
+        ctx.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+      });
+
+      originalBuffer = decoded;
+      stopPlayback();
+      pausedAt = 0;
+
+      fileMetaEl.textContent = `${humanFileSize(file.size)} · ${formatTime(decoded.duration)} · ${decoded.sampleRate} Hz · ${decoded.numberOfChannels}ch`;
+      durationEl.textContent = formatTime(decoded.duration);
+      seekBar.value = 0;
+      seekBar.style.setProperty('--progress', '0%');
+      statusText.textContent = 'Loaded! Hit "Reverse Audio" to flip it, or press play to preview the original.';
+    } catch (err) {
+      console.error(err);
+      showError('Failed to decode this audio file. It may be corrupted or in an unsupported format.');
+      fileMetaEl.textContent = 'Failed to decode';
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Mode switching: Upload a file vs. Record live from the microphone
+  // ---------------------------------------------------------------------
+
+  tabUpload.addEventListener('click', () => setMode('upload'));
+  tabRecord.addEventListener('click', () => setMode('record'));
+
+  function setMode(mode) {
+    if (mode === activeMode) return;
+
+    // Leaving record mode mid-recording: stop and discard cleanly.
+    if (activeMode === 'record' && isRecording) {
+      stopRecording({ discard: true });
+    }
+
+    activeMode = mode;
+    const activeClasses = ['bg-indigo-500', 'text-white', 'shadow-md', 'shadow-indigo-500/20'];
+
+    if (mode === 'upload') {
+      uploadPanel.classList.remove('hidden');
+      recordPanel.classList.add('hidden');
+      recordPanel.classList.remove('flex');
+      tabUpload.classList.add(...activeClasses);
+      tabUpload.classList.remove('text-zinc-400');
+      tabRecord.classList.remove(...activeClasses);
+      tabRecord.classList.add('text-zinc-400');
+    } else {
+      uploadPanel.classList.add('hidden');
+      recordPanel.classList.remove('hidden');
+      recordPanel.classList.add('flex');
+      tabRecord.classList.add(...activeClasses);
+      tabRecord.classList.remove('text-zinc-400');
+      tabUpload.classList.remove(...activeClasses);
+      tabUpload.classList.add('text-zinc-400');
+    }
+  }
+
+  recordToggleBtn.addEventListener('click', async () => {
+    if (isRecording) {
+      stopRecording({ discard: false });
+    } else {
+      await startRecording();
+    }
+  });
+
+  /** Request mic access and begin capturing audio via MediaRecorder. */
+  async function startRecording() {
+    hideError();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      showError('Live recording is not supported in this browser (getUserMedia/MediaRecorder unavailable).');
+      return;
+    }
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      console.error(err);
+      showError('Microphone access was denied or is unavailable. Please allow microphone permissions and try again.');
+      return;
+    }
+
+    // A click is a user gesture, so this is also a safe place to unlock the AudioContext.
+    ensureAudioContext();
+
+    recordedChunks = [];
+
+    // Pick the best supported container/codec for MediaRecorder on this browser.
+    const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    const supportedMime = mimeCandidates.find(m => window.MediaRecorder.isTypeSupported && window.MediaRecorder.isTypeSupported(m));
+
+    try {
+      mediaRecorder = supportedMime
+        ? new MediaRecorder(mediaStream, { mimeType: supportedMime })
+        : new MediaRecorder(mediaStream);
+    } catch (err) {
+      console.error(err);
+      showError('Unable to initialize the recorder on this device.');
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+      return;
+    }
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+      }
+      if (recordedChunks.length === 0 || mediaRecorder.__discard) return;
+
+      const mimeType = mediaRecorder.mimeType || 'audio/webm';
+      const blob = new Blob(recordedChunks, { type: mimeType });
+      const ext = mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+
+      // Wrap as a File so it flows through the exact same pipeline as an uploaded file.
+      const recordedFile = new File([blob], `recording-${Date.now()}.${ext}`, { type: mimeType });
+      recordStatusLabel.textContent = 'Recording captured! Decoding…';
+      handleFile(recordedFile);
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    recordSeconds = 0;
+    recordTimerEl.textContent = '0:00';
+    recordTimerEl.classList.remove('hidden');
+    recordStatusLabel.textContent = 'Recording… tap stop when finished';
+    recordIconWrap.classList.add('bg-red-500/20');
+    recordIconWrap.querySelector('[data-lucide]')?.setAttribute('data-lucide', 'mic');
+    recordToggleBtn.classList.add('recording-active');
+    recordToggleBtn.innerHTML = '<i data-lucide="square" class="h-4 w-4 fill-current"></i><span>Stop Recording</span>';
+    renderIcons();
+
+    recordTimerInterval = setInterval(() => {
+      recordSeconds += 1;
+      recordTimerEl.textContent = formatTime(recordSeconds);
+    }, 1000);
+  }
+
+  /** Stop the active recording. If discard is true, the captured audio is thrown away
+   *  (used when the user switches tabs mid-recording) instead of being decoded. */
+  function stopRecording({ discard }) {
+    if (mediaRecorder) {
+      mediaRecorder.__discard = !!discard;
+      if (mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    } else if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+
+    isRecording = false;
+    clearInterval(recordTimerInterval);
+    recordToggleBtn.classList.remove('recording-active');
+    recordToggleBtn.innerHTML = '<i data-lucide="circle" class="h-4 w-4 fill-current"></i><span>Start Recording</span>';
+    recordIconWrap.classList.remove('bg-red-500/20');
+    recordTimerEl.classList.add('hidden');
+    if (!discard) {
+      // onstop handler above will move status text forward once decoding starts.
+    } else {
+      recordStatusLabel.textContent = 'Tap the button to start recording';
+    }
+    renderIcons();
+  }
+
+  // ---------------------------------------------------------------------
+  // Reversing the audio buffer
+  // ---------------------------------------------------------------------
+
+  reverseBtn.addEventListener('click', async () => {
+    if (!originalBuffer) {
+      showError('Please load an audio file first.');
+      return;
+    }
+
+    setReversing(true);
+
+    // Yield to the browser so the spinner actually renders before the
+    // (potentially heavy, synchronous) reversal work blocks the main thread.
+    await new Promise(requestAnimationFrame);
+
+    try {
+      reversedBuffer = reverseAudioBuffer(originalBuffer);
+      btnReversed.disabled = false;
+      downloadBtn.disabled = false;
+      statusText.textContent = 'Reversed! Toggle "Reversed" above to preview, or download the WAV.';
+
+      // Auto-switch to the reversed version for immediate feedback.
+      switchVersion('reversed');
+    } catch (err) {
+      console.error(err);
+      showError('Something went wrong while reversing the audio.');
+    } finally {
+      setReversing(false);
+    }
+  });
+
+  function setReversing(active) {
+    reverseBtn.disabled = active;
+    if (active) {
+      reverseBtnText.textContent = 'Reversing…';
+      reverseBtn.querySelector('[data-lucide]')?.remove();
+      const icon = document.createElement('i');
+      icon.setAttribute('data-lucide', 'loader-2');
+      icon.className = 'h-4 w-4 spin';
+      reverseBtn.prepend(icon);
+      renderIcons();
+    } else {
+      reverseBtnText.textContent = 'Reverse Audio';
+      const icon = reverseBtn.querySelector('[data-lucide]');
+      if (icon) icon.remove();
+      const newIcon = document.createElement('i');
+      newIcon.setAttribute('data-lucide', 'repeat');
+      newIcon.className = 'h-4 w-4';
+      reverseBtn.prepend(newIcon);
+      renderIcons();
+    }
+  }
+
+  /** Create a brand-new AudioBuffer whose channel data is the exact reverse
+   *  (sample order flipped) of the source buffer. Non-destructive: the
+   *  original buffer is left untouched. */
+  function reverseAudioBuffer(buffer) {
+    const ctx = ensureAudioContext();
+    const reversed = ctx.createBuffer(
+      buffer.numberOfChannels,
+      buffer.length,
+      buffer.sampleRate
+    );
+
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+      const sourceData = buffer.getChannelData(channel);
+      const reversedData = reversed.getChannelData(channel);
+      const len = sourceData.length;
+      for (let i = 0; i < len; i++) {
+        reversedData[i] = sourceData[len - 1 - i];
+      }
+    }
+    return reversed;
+  }
+
+  // ---------------------------------------------------------------------
+  // Version toggle (Original vs Reversed)
+  // ---------------------------------------------------------------------
+
+  btnOriginal.addEventListener('click', () => switchVersion('original'));
+  btnReversed.addEventListener('click', () => switchVersion('reversed'));
+
+  function switchVersion(version) {
+    if (version === 'reversed' && !reversedBuffer) return;
+    if (version === currentVersion) return;
+
+    const wasPlaying = isPlaying;
+    stopPlayback();
+    currentVersion = version;
+    pausedAt = 0;
+    seekBar.value = 0;
+    seekBar.style.setProperty('--progress', '0%');
+    currentTimeEl.textContent = '0:00';
+    durationEl.textContent = formatTime(getActiveBuffer().duration);
+    updateVersionButtons();
+
+    if (wasPlaying) startPlayback();
+  }
+
+  function updateVersionButtons() {
+    const activeClasses = ['bg-indigo-500', 'text-white', 'shadow-md', 'shadow-indigo-500/20'];
+    const inactiveTextClasses = ['text-zinc-400'];
+
+    [btnOriginal, btnReversed].forEach(btn => {
+      const isActive = btn.dataset.version === currentVersion;
+      btn.classList.remove(...activeClasses, ...inactiveTextClasses, 'text-zinc-600');
+      if (isActive) {
+        btn.classList.add(...activeClasses);
+      } else if (btn.disabled) {
+        btn.classList.add('text-zinc-600');
+      } else {
+        btn.classList.add(...inactiveTextClasses);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Playback (play / pause / seek) using AudioBufferSourceNode
+  // ---------------------------------------------------------------------
+
+  playPauseBtn.addEventListener('click', () => {
+    if (!getActiveBuffer()) {
+      showError('Please load an audio file first.');
+      return;
+    }
+    ensureAudioContext();
+    if (isPlaying) {
+      pausePlayback();
+    } else {
+      startPlayback();
+    }
+  });
+
+  function startPlayback() {
+    const buffer = getActiveBuffer();
+    if (!buffer) return;
+
+    const ctx = ensureAudioContext();
+
+    // AudioBufferSourceNodes are single-use in the Web Audio API spec, so a
+    // fresh node must be created every time playback (re)starts.
+    sourceNode = ctx.createBufferSource();
+    sourceNode.buffer = buffer;
+    sourceNode.connect(ctx.destination);
+
+    const offset = pausedAt % buffer.duration;
+    sourceNode.start(0, offset);
+    startedAt = ctx.currentTime - offset;
+
+    sourceNode.onended = () => {
+      // Distinguish a natural end-of-track from a manual stop/pause (which
+      // also triggers onended after .stop() is called).
+      if (isPlaying) {
+        isPlaying = false;
+        pausedAt = 0;
+        updatePlayButtonUI();
+        cancelAnimationFrame(rafId);
+        seekBar.value = 0;
+        seekBar.style.setProperty('--progress', '0%');
+        currentTimeEl.textContent = '0:00';
+      }
+    };
+
+    isPlaying = true;
+    updatePlayButtonUI();
+    tickSeekBar();
+  }
+
+  function pausePlayback() {
+    if (sourceNode) {
+      const ctx = ensureAudioContext();
+      pausedAt = ctx.currentTime - startedAt;
+      isPlaying = false;
+      try { sourceNode.onended = null; sourceNode.stop(); } catch (_) {}
+      sourceNode = null;
+    }
+    updatePlayButtonUI();
+    cancelAnimationFrame(rafId);
+  }
+
+  function stopPlayback() {
+    if (sourceNode) {
+      try { sourceNode.onended = null; sourceNode.stop(); } catch (_) {}
+      sourceNode = null;
+    }
+    isPlaying = false;
+    updatePlayButtonUI();
+    cancelAnimationFrame(rafId);
+  }
+
+  function updatePlayButtonUI() {
+    playPauseBtn.innerHTML = isPlaying
+      ? '<i data-lucide="pause" class="h-6 w-6"></i>'
+      : '<i data-lucide="play" class="h-6 w-6 translate-x-0.5"></i>';
+    renderIcons();
+
+    if (isPlaying) {
+      playingIndicator.classList.remove('hidden');
+      playingIndicator.classList.add('flex');
+    } else {
+      playingIndicator.classList.add('hidden');
+      playingIndicator.classList.remove('flex');
+    }
+  }
+
+  /** Drives the seek bar + time label while audio is playing, via rAF. */
+  function tickSeekBar() {
+    const buffer = getActiveBuffer();
+    if (!buffer || !isPlaying) return;
+
+    const ctx = ensureAudioContext();
+    const elapsed = ctx.currentTime - startedAt;
+    const pct = Math.min(100, (elapsed / buffer.duration) * 100);
+
+    seekBar.value = pct;
+    seekBar.style.setProperty('--progress', pct + '%');
+    currentTimeEl.textContent = formatTime(elapsed);
+
+    rafId = requestAnimationFrame(tickSeekBar);
+  }
+
+  // Manual seeking via the range input
+  seekBar.addEventListener('input', () => {
+    const buffer = getActiveBuffer();
+    if (!buffer) return;
+    const pct = parseFloat(seekBar.value);
+    seekBar.style.setProperty('--progress', pct + '%');
+    const newTime = (pct / 100) * buffer.duration;
+    currentTimeEl.textContent = formatTime(newTime);
+
+    const wasPlaying = isPlaying;
+    if (wasPlaying) stopPlayback();
+    pausedAt = newTime;
+    if (wasPlaying) startPlayback();
+  });
+
+  // ---------------------------------------------------------------------
+  // WAV export (encodes the reversed AudioBuffer as a downloadable .wav)
+  // ---------------------------------------------------------------------
+
+  downloadBtn.addEventListener('click', () => {
+    if (!reversedBuffer) return;
+    try {
+      const wavBlob = audioBufferToWav(reversedBuffer);
+      const url = URL.createObjectURL(wavBlob);
+      const a = document.createElement('a');
+      const baseName = (currentFile?.name || 'audio').replace(/\.[^/.]+$/, '');
+      a.href = url;
+      a.download = `${baseName}-reversed.wav`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      statusText.textContent = 'Download started!';
+    } catch (err) {
+      console.error(err);
+      showError('Failed to generate the WAV file for download.');
+    }
+  });
+
+  /**
+   * Encodes an AudioBuffer into a 16-bit PCM WAV file Blob.
+   * Implements the standard 44-byte RIFF/WAVE header followed by
+   * interleaved, little-endian PCM sample data — no external libraries needed.
+   */
+  function audioBufferToWav(buffer) {
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const bitsPerSample = 16;
+    const bytesPerSample = bitsPerSample / 8;
+    const blockAlign = numChannels * bytesPerSample;
+    const numFrames = buffer.length;
+    const dataSize = numFrames * blockAlign;
+    const bufferSize = 44 + dataSize;
+
+    const arrayBuffer = new ArrayBuffer(bufferSize);
+    const view = new DataView(arrayBuffer);
+
+    function writeString(offset, str) {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    }
+
+    // ---- RIFF header ----
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, 'WAVE');
+
+    // ---- fmt sub-chunk ----
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);              // Sub-chunk size (16 for PCM)
+    view.setUint16(20, 1, true);               // Audio format = 1 (PCM, uncompressed)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // Byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // ---- data sub-chunk ----
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // Interleave channels and convert float samples [-1, 1] to 16-bit PCM ints.
+    const channelData = [];
+    for (let ch = 0; ch < numChannels; ch++) {
+      channelData.push(buffer.getChannelData(ch));
+    }
+
+    let offset = 44;
+    for (let i = 0; i < numFrames; i++) {
+      for (let ch = 0; ch < numChannels; ch++) {
+        let sample = channelData[ch][i];
+        sample = Math.max(-1, Math.min(1, sample)); // Clamp to valid range
+        const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+        view.setInt16(offset, intSample, true);
+        offset += 2;
+      }
+    }
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
+  }
+
+  // ---------------------------------------------------------------------
+  // Init
+  // ---------------------------------------------------------------------
+  setMode('upload');
+  updateVersionButtons();
+  renderIcons();
+})();
+</script>
+</body>
+</html>
